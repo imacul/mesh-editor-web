@@ -18,6 +18,7 @@ export function Viewport() {
   const pointerRef = useRef(new THREE.Vector2());
 
   const modelPath = useEditorStore((state) => state.modelPath);
+  const modelFile = useEditorStore((state) => state.modelFile);
   const groupIds = useEditorStore((state) => state.groupIds);
   const groups = useEditorStore((state) => state.groups);
   const landmarks = useEditorStore((state) => state.landmarks);
@@ -197,27 +198,43 @@ export function Viewport() {
     const load = async () => {
       editorStoreApi.getState().setLoadingModel(true);
       editorStoreApi.getState().setModelError(null);
-      const loaded = await loadEditableModel(modelPath);
-      if (cancelled) {
-        disposeMesh(loaded.mesh);
-        return;
-      }
-
-      if (meshRef.current) {
-        context.scene.remove(meshRef.current);
-        disposeMesh(meshRef.current);
-      }
-
-      meshRef.current = loaded.mesh;
-      context.scene.add(loaded.mesh);
-      centroidsRef.current = computeTriangleCentroids(loaded.mesh.geometry);
-      editorStoreApi.getState().syncModel(modelPath, centroidsRef.current.length / 3);
-      editorStoreApi.getState().setLoadingModel(false);
-
-      if (loaded.fallbackReason) {
+      if (!modelFile && modelPath.startsWith("uploaded:")) {
+        editorStoreApi.getState().setLoadingModel(false);
         editorStoreApi
           .getState()
-          .setModelError(`Could not load ${modelPath}. Using fallback box. ${loaded.fallbackReason}`);
+          .setModelError("This session references a local upload. Re-upload the mesh file to restore it.");
+        return;
+      }
+      const sourceUrl = modelFile ? URL.createObjectURL(modelFile) : modelPath;
+      const sourceName = modelFile?.name;
+      try {
+        const loaded = await loadEditableModel(sourceUrl, sourceName);
+        if (cancelled) {
+          disposeMesh(loaded.mesh);
+          return;
+        }
+
+        if (meshRef.current) {
+          context.scene.remove(meshRef.current);
+          disposeMesh(meshRef.current);
+        }
+
+        meshRef.current = loaded.mesh;
+        context.scene.add(loaded.mesh);
+        centroidsRef.current = computeTriangleCentroids(loaded.mesh.geometry);
+        editorStoreApi.getState().syncModel(modelPath, centroidsRef.current.length / 3);
+        editorStoreApi.getState().setLoadingModel(false);
+
+        if (loaded.fallbackReason) {
+          const sourceLabel = modelFile?.name ?? modelPath;
+          editorStoreApi
+            .getState()
+            .setModelError(`Could not load ${sourceLabel}. Using fallback box. ${loaded.fallbackReason}`);
+        }
+      } finally {
+        if (modelFile) {
+          URL.revokeObjectURL(sourceUrl);
+        }
       }
     };
 
@@ -231,7 +248,7 @@ export function Viewport() {
     return () => {
       cancelled = true;
     };
-  }, [modelPath]);
+  }, [modelPath, modelFile]);
 
   useEffect(() => {
     if (!meshRef.current) {
@@ -318,4 +335,3 @@ export function Viewport() {
     </section>
   );
 }
-

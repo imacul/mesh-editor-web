@@ -13,6 +13,7 @@ import type {
 
 export interface EditorStoreState {
   modelPath: string;
+  modelFile: File | null;
   triangleCount: number;
   groupIds: number[];
   groups: Record<number, GroupMeta>;
@@ -27,6 +28,7 @@ export interface EditorStoreState {
   undoStack: PaintOperation[];
   redoStack: PaintOperation[];
   setModelPath: (path: string) => void;
+  setModelFile: (file: File) => void;
   syncModel: (modelPath: string, triangleCount: number) => void;
   setLoadingModel: (loading: boolean) => void;
   setModelError: (value: string | null) => void;
@@ -93,6 +95,7 @@ function landmarkId(): string {
 const createInitialData = (): Omit<
   EditorStoreState,
   | "setModelPath"
+  | "setModelFile"
   | "syncModel"
   | "setLoadingModel"
   | "setModelError"
@@ -113,6 +116,7 @@ const createInitialData = (): Omit<
   | "loadSession"
 > => ({
   modelPath: "/models/sample.glb",
+  modelFile: null,
   triangleCount: 0,
   groupIds: [],
   groups: defaultGroups(),
@@ -132,7 +136,14 @@ export const createEditorStore = () =>
   createStore<EditorStoreState>((set, get) => ({
     ...createInitialData(),
     setModelPath: (path) => {
-      set({ modelPath: path });
+      set({ modelPath: path, modelFile: null });
+    },
+    setModelFile: (file) => {
+      const uploadedIdentifier = `uploaded:${file.name}:${file.size}:${file.lastModified}`;
+      set({
+        modelPath: uploadedIdentifier,
+        modelFile: file,
+      });
     },
     syncModel: (modelPath, triangleCount) => {
       set((state) => {
@@ -344,6 +355,7 @@ export const createEditorStore = () =>
       }
       set({
         modelPath: session.modelPath,
+        modelFile: null,
         triangleCount: session.triangleCount,
         groupIds: decoded,
         groups: nextGroups,
@@ -359,4 +371,3 @@ export const editorStoreApi = createEditorStore();
 
 export const useEditorStore = <T,>(selector: (state: EditorStoreState) => T) =>
   useStore(editorStoreApi, selector);
-

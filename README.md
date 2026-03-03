@@ -32,8 +32,8 @@ Web-based 3D mesh editor focused on face-group painting (segmentation) and landm
    ```
 
 ## Usage
-1. Put your sample model at `public/models/sample.glb`.
-2. Open the app and use the default model path `/models/sample.glb`.
+1. Open the app and upload a local mesh in the Session panel (`.stl`, `.obj`, `.ply`, `.glb`, `.gltf`).
+2. You can still load by URL/path using the model path input if needed.
 3. Choose a tool:
    - `Paint`: assign active group to faces.
    - `Erase`: set faces to group `0`.
@@ -44,7 +44,8 @@ Web-based 3D mesh editor focused on face-group painting (segmentation) and landm
 6. Manage group names/colors/visibility in the Groups panel.
 7. Export/Import full session JSON in the Session panel.
 
-If `/models/sample.glb` is missing or fails to load, a fallback mock box is loaded so the editor remains usable.
+If loading fails, a fallback mock box is loaded so the editor remains usable.
+If you import a session created from a local upload, re-upload that mesh file to restore the original geometry.
 
 ## Session JSON contents
 - `modelPath`
@@ -62,4 +63,3 @@ src/
   tools/    Painting math, palette, group encoding
   ui/       Sidebar panels + viewport component
 ```
-

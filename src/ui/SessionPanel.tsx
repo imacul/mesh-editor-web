@@ -4,7 +4,9 @@ import type { EditorSession } from "../state/types";
 
 export function SessionPanel() {
   const modelPath = useEditorStore((state) => state.modelPath);
+  const modelFile = useEditorStore((state) => state.modelFile);
   const setModelPath = useEditorStore((state) => state.setModelPath);
+  const setModelFile = useEditorStore((state) => state.setModelFile);
   const [draftModelPath, setDraftModelPath] = useState(modelPath);
   const [importError, setImportError] = useState<string | null>(null);
 
@@ -39,9 +41,31 @@ export function SessionPanel() {
     }
   };
 
+  const uploadMesh = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+    setModelFile(file);
+    setImportError(null);
+    event.target.value = "";
+  };
+
   return (
     <section className="panel">
       <h2>Session</h2>
+      <div className="panel-row">
+        <label htmlFor="mesh-upload">Upload Mesh</label>
+        <input
+          id="mesh-upload"
+          className="import-input"
+          type="file"
+          accept=".stl,.obj,.ply,.glb,.gltf"
+          onChange={uploadMesh}
+        />
+      </div>
+      <p className="hint">Supported: STL, OBJ, PLY, GLB, GLTF</p>
+      {modelFile ? <p className="hint">Current upload: {modelFile.name}</p> : null}
       <div className="panel-row">
         <label htmlFor="model-path">Model Path</label>
         <input
@@ -53,7 +77,7 @@ export function SessionPanel() {
       </div>
       <div className="panel-row">
         <button className="btn" type="button" onClick={() => setModelPath(draftModelPath)}>
-          Load Model
+          Load From Path
         </button>
         <button className="btn" type="button" onClick={exportSession}>
           Export JSON
@@ -66,4 +90,3 @@ export function SessionPanel() {
     </section>
   );
 }
-
