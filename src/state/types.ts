@@ -9,6 +9,12 @@ export interface GroupMeta {
 
 export type Vec3 = [number, number, number];
 
+export interface ModelTransform {
+  position: Vec3;
+  rotation: Vec3;
+  scale: number;
+}
+
 export interface Landmark {
   id: string;
   name: string;
@@ -28,13 +34,20 @@ export interface PaintOperation {
   changes: TriangleChange[];
 }
 
+export interface PerfStats {
+  fps: number;
+  strokeMs: number;
+  strokeTriangles: number;
+}
+
 export interface EditorSession {
   version: 1;
   modelPath: string;
+  modelTransform?: ModelTransform;
   triangleCount: number;
+  triangleOrderHash?: string;
   groupIdsEncoded: string;
   groups: GroupMeta[];
   landmarks: Landmark[];
   activeGroupId: number;
 }
-

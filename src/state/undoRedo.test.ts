@@ -4,7 +4,7 @@ import { createEditorStore } from "./editorStore";
 describe("undo/redo paint operations", () => {
   it("reverts and reapplies triangle group changes", () => {
     const store = createEditorStore();
-    store.getState().syncModel("/models/sample.glb", 6);
+    store.getState().syncModel("/models/sample.glb", 6, "hash-a");
 
     store.getState().applyTriangleChanges([
       { triangleIndex: 0, prevGroupId: 0, nextGroupId: 1 },
@@ -25,7 +25,7 @@ describe("undo/redo paint operations", () => {
 
   it("clears redo stack when a new operation is made", () => {
     const store = createEditorStore();
-    store.getState().syncModel("/models/sample.glb", 3);
+    store.getState().syncModel("/models/sample.glb", 3, "hash-b");
 
     store.getState().applyTriangleChanges([
       { triangleIndex: 0, prevGroupId: 0, nextGroupId: 1 },
@@ -39,4 +39,3 @@ describe("undo/redo paint operations", () => {
     expect(store.getState().redoStack).toHaveLength(0);
   });
 });
-
