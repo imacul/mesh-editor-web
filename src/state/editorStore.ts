@@ -12,12 +12,17 @@ import { decodeGroupIds, encodeGroupIds } from "../tools/groupEncoding";
 import { paletteColorForGroup } from "../tools/palette";
 import type {
   BrushMode,
+  CurveKind,
   EditorSession,
   GroupMeta,
+  GroupType,
   Landmark,
   ModelTransform,
   PaintOperation,
   PerfStats,
+  SplintSettings,
+  SurfaceCurve,
+  SurfaceCurvePoint,
   TriangleChange,
   Vec3,
 } from "./types";
@@ -45,6 +50,21 @@ export interface EditorStoreState {
   focusRequestNonce: number;
   undoStack: PaintOperation[];
   redoStack: PaintOperation[];
+
+  curves: SurfaceCurve[];
+  activeCurveId: string | null;
+  selectedCurvePointId: string | null;
+  pickingRegionSeed: boolean;
+  regionSeedTriangleIndex: number | null;
+  inRegion: boolean[];
+  regionBoundaryTriangles: number[];
+  regionComputeNonce: number;
+
+  splintSettings: SplintSettings;
+  splintGenerateNonce: number;
+  splintStatus: string | null;
+  splintReady: boolean;
+
   setModelPath: (path: string) => void;
   setModelFile: (file: File) => void;
   setModelPosition: (position: Vec3) => void;
@@ -69,6 +89,7 @@ export interface EditorStoreState {
   renameGroup: (groupId: number, name: string) => void;
   setGroupColor: (groupId: number, color: string) => void;
   setGroupVisibility: (groupId: number, visible: boolean) => void;
+  setGroupType: (groupId: number, type: GroupType) => void;
   applyTriangleChanges: (changes: TriangleChange[], pushHistory?: boolean) => void;
   pushHistoryOperation: (changes: TriangleChange[]) => void;
   floodFillFromPicked: (constrainToSourceGroup: boolean) => void;
@@ -85,14 +106,50 @@ export interface EditorStoreState {
   ) => void;
   removeLandmark: (id: string) => void;
   focusLandmark: (id: string) => void;
+
+  createCurve: (kind: CurveKind) => string;
+  renameCurve: (curveId: string, name: string) => void;
+  setCurveKind: (curveId: string, kind: CurveKind) => void;
+  setActiveCurveId: (curveId: string | null) => void;
+  toggleCurveClosed: (curveId: string) => void;
+  deleteCurve: (curveId: string) => void;
+  addPointToActiveCurve: (point: SurfaceCurvePoint) => void;
+  updateCurvePoint: (curveId: string, pointId: string, point: SurfaceCurvePoint) => void;
+  deleteCurvePoint: (curveId: string, pointId: string) => void;
+  setSelectedCurvePointId: (pointId: string | null) => void;
+
+  setPickingRegionSeed: (value: boolean) => void;
+  setRegionSeedTriangleIndex: (triangleIndex: number | null) => void;
+  requestRegionCompute: () => void;
+  setRegionResult: (inRegion: boolean[], boundaryTriangles: number[]) => void;
+  clearRegion: () => void;
+
+  setSplintSettings: (partial: Partial<SplintSettings>) => void;
+  requestSplintGeneration: () => void;
+  setSplintStatus: (value: string | null) => void;
+  setSplintReady: (value: boolean) => void;
+  clearSplint: () => void;
+
   toSession: () => EditorSession;
   loadSession: (session: EditorSession) => void;
 }
 
 function defaultGroups(): Record<number, GroupMeta> {
   return {
-    0: { id: 0, name: "Unassigned", color: paletteColorForGroup(0), visible: true },
-    1: { id: 1, name: "Group 1", color: paletteColorForGroup(1), visible: true },
+    0: {
+      id: 0,
+      name: "Unassigned",
+      color: paletteColorForGroup(0),
+      visible: true,
+      type: "default",
+    },
+    1: {
+      id: 1,
+      name: "Group 1",
+      color: paletteColorForGroup(1),
+      visible: true,
+      type: "default",
+    },
   };
 }
 
@@ -110,6 +167,7 @@ function ensureGroup(
       name: groupId === 0 ? "Unassigned" : `Group ${groupId}`,
       color: paletteColorForGroup(groupId),
       visible: true,
+      type: "default",
     },
   };
 }
@@ -126,6 +184,13 @@ function landmarkId(): string {
     return crypto.randomUUID();
   }
   return `lm-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+}
+
+function curveId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `cv-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
 }
 
 function sanitizeScale(value: number): number {
@@ -147,6 +212,14 @@ const DEFAULT_MODEL_TRANSFORM: ModelTransform = {
   position: [0, 0, 0],
   rotation: [0, 0, 0],
   scale: 1,
+};
+
+const DEFAULT_SPLINT_SETTINGS: SplintSettings = {
+  baseClearance: 0.8,
+  reliefExtraClearance: 0.7,
+  thickness: 2,
+  seamCutWidth: 1.5,
+  borderSmoothIterations: 2,
 };
 
 function normalizeModelTransform(input?: Partial<ModelTransform> | null): ModelTransform {
@@ -174,6 +247,22 @@ function normalizeModelTransform(input?: Partial<ModelTransform> | null): ModelT
   };
 }
 
+function normalizeSplintSettings(input?: Partial<SplintSettings> | null): SplintSettings {
+  return {
+    baseClearance: Math.max(0, Number(input?.baseClearance ?? DEFAULT_SPLINT_SETTINGS.baseClearance)),
+    reliefExtraClearance: Math.max(
+      0,
+      Number(input?.reliefExtraClearance ?? DEFAULT_SPLINT_SETTINGS.reliefExtraClearance)
+    ),
+    thickness: Math.max(0.1, Number(input?.thickness ?? DEFAULT_SPLINT_SETTINGS.thickness)),
+    seamCutWidth: Math.max(0, Number(input?.seamCutWidth ?? DEFAULT_SPLINT_SETTINGS.seamCutWidth)),
+    borderSmoothIterations: Math.max(
+      0,
+      Math.floor(Number(input?.borderSmoothIterations ?? DEFAULT_SPLINT_SETTINGS.borderSmoothIterations))
+    ),
+  };
+}
+
 function computeTriangleDiff(prev: number[], next: number[]): TriangleChange[] {
   const changes: TriangleChange[] = [];
   const count = Math.min(prev.length, next.length);
@@ -187,6 +276,32 @@ function computeTriangleDiff(prev: number[], next: number[]): TriangleChange[] {
     }
   }
   return changes;
+}
+
+function sanitizeCurvePoint(point: SurfaceCurvePoint): SurfaceCurvePoint {
+  return {
+    id: point.id,
+    triangleIndex: Math.max(0, Math.floor(point.triangleIndex)),
+    barycentricCoords: [
+      Number(point.barycentricCoords[0] ?? 0),
+      Number(point.barycentricCoords[1] ?? 0),
+      Number(point.barycentricCoords[2] ?? 0),
+    ],
+    worldPosition: sanitizeVec3(point.worldPosition),
+  };
+}
+
+function normalizeCurves(curves?: SurfaceCurve[]): SurfaceCurve[] {
+  if (!curves?.length) {
+    return [];
+  }
+  return curves.map((curve, index) => ({
+    id: curve.id || `curve-${index + 1}`,
+    name: curve.name?.trim() || `Curve ${index + 1}`,
+    kind: curve.kind === "seam" ? "seam" : "trim",
+    closed: Boolean(curve.closed),
+    points: (curve.points ?? []).map(sanitizeCurvePoint),
+  }));
 }
 
 const createInitialData = (): Omit<
@@ -215,6 +330,7 @@ const createInitialData = (): Omit<
   | "renameGroup"
   | "setGroupColor"
   | "setGroupVisibility"
+  | "setGroupType"
   | "applyTriangleChanges"
   | "pushHistoryOperation"
   | "floodFillFromPicked"
@@ -227,6 +343,26 @@ const createInitialData = (): Omit<
   | "addLandmark"
   | "removeLandmark"
   | "focusLandmark"
+  | "createCurve"
+  | "renameCurve"
+  | "setCurveKind"
+  | "setActiveCurveId"
+  | "toggleCurveClosed"
+  | "deleteCurve"
+  | "addPointToActiveCurve"
+  | "updateCurvePoint"
+  | "deleteCurvePoint"
+  | "setSelectedCurvePointId"
+  | "setPickingRegionSeed"
+  | "setRegionSeedTriangleIndex"
+  | "requestRegionCompute"
+  | "setRegionResult"
+  | "clearRegion"
+  | "setSplintSettings"
+  | "requestSplintGeneration"
+  | "setSplintStatus"
+  | "setSplintReady"
+  | "clearSplint"
   | "toSession"
   | "loadSession"
 > => ({
@@ -256,6 +392,20 @@ const createInitialData = (): Omit<
   focusRequestNonce: 0,
   undoStack: [],
   redoStack: [],
+
+  curves: [],
+  activeCurveId: null,
+  selectedCurvePointId: null,
+  pickingRegionSeed: false,
+  regionSeedTriangleIndex: null,
+  inRegion: [],
+  regionBoundaryTriangles: [],
+  regionComputeNonce: 0,
+
+  splintSettings: { ...DEFAULT_SPLINT_SETTINGS },
+  splintGenerateNonce: 0,
+  splintStatus: null,
+  splintReady: false,
 });
 
 export const createEditorStore = () =>
@@ -331,6 +481,7 @@ export const createEditorStore = () =>
           state.modelPath === modelPath &&
           state.groupIds.length === triangleCount &&
           state.triangleOrderHash === triangleOrderHash;
+
         return {
           modelPath,
           triangleCount,
@@ -339,9 +490,23 @@ export const createEditorStore = () =>
             ? normalizeGroupIdsLength(state.groupIds, triangleCount)
             : new Array(triangleCount).fill(0),
           triangleAdjacency: canReuseSession ? state.triangleAdjacency : [],
+          curves: canReuseSession ? state.curves : [],
+          activeCurveId: canReuseSession ? state.activeCurveId : null,
+          selectedCurvePointId: null,
+          pickingRegionSeed: false,
+          regionSeedTriangleIndex: canReuseSession ? state.regionSeedTriangleIndex : null,
+          inRegion: canReuseSession
+            ? normalizeGroupIdsLength(
+                state.inRegion.map((value) => (value ? 1 : 0)),
+                triangleCount
+              ).map((value) => value === 1)
+            : new Array(triangleCount).fill(false),
+          regionBoundaryTriangles: canReuseSession ? state.regionBoundaryTriangles : [],
           lastPickedTriangleIndex: null,
           undoStack: canReuseSession ? state.undoStack : [],
           redoStack: canReuseSession ? state.redoStack : [],
+          splintReady: false,
+          splintStatus: null,
         };
       });
     },
@@ -389,6 +554,7 @@ export const createEditorStore = () =>
               id: groupId,
               color: paletteColorForGroup(groupId),
               visible: true,
+              type: "default",
             }),
             name: name.trim() || (groupId === 0 ? "Unassigned" : `Group ${groupId}`),
           },
@@ -403,6 +569,7 @@ export const createEditorStore = () =>
               id: groupId,
               name: groupId === 0 ? "Unassigned" : `Group ${groupId}`,
               visible: true,
+              type: "default",
             }),
             color,
           },
@@ -417,8 +584,24 @@ export const createEditorStore = () =>
               id: groupId,
               name: groupId === 0 ? "Unassigned" : `Group ${groupId}`,
               color: paletteColorForGroup(groupId),
+              type: "default",
             }),
             visible,
+          },
+        },
+      })),
+    setGroupType: (groupId, type) =>
+      set((state) => ({
+        groups: {
+          ...state.groups,
+          [groupId]: {
+            ...(state.groups[groupId] ?? {
+              id: groupId,
+              name: groupId === 0 ? "Unassigned" : `Group ${groupId}`,
+              color: paletteColorForGroup(groupId),
+              visible: true,
+            }),
+            type,
           },
         },
       })),
@@ -597,6 +780,143 @@ export const createEditorStore = () =>
         focusLandmarkId: id,
         focusRequestNonce: state.focusRequestNonce + 1,
       })),
+
+    createCurve: (kind) => {
+      const id = curveId();
+      set((state) => ({
+        curves: [
+          ...state.curves,
+          {
+            id,
+            name: kind === "trim" ? `Trim ${state.curves.filter((c) => c.kind === "trim").length + 1}` : `Seam ${state.curves.filter((c) => c.kind === "seam").length + 1}`,
+            kind,
+            closed: false,
+            points: [],
+          },
+        ],
+        activeCurveId: id,
+        selectedCurvePointId: null,
+      }));
+      return id;
+    },
+    renameCurve: (curveIdValue, name) =>
+      set((state) => ({
+        curves: state.curves.map((curve) =>
+          curve.id === curveIdValue ? { ...curve, name: name.trim() || curve.name } : curve
+        ),
+      })),
+    setCurveKind: (curveIdValue, kind) =>
+      set((state) => ({
+        curves: state.curves.map((curve) => (curve.id === curveIdValue ? { ...curve, kind } : curve)),
+      })),
+    setActiveCurveId: (activeCurveId) => set({ activeCurveId, selectedCurvePointId: null }),
+    toggleCurveClosed: (curveIdValue) =>
+      set((state) => ({
+        curves: state.curves.map((curve) =>
+          curve.id === curveIdValue ? { ...curve, closed: !curve.closed } : curve
+        ),
+      })),
+    deleteCurve: (curveIdValue) =>
+      set((state) => {
+        const nextCurves = state.curves.filter((curve) => curve.id !== curveIdValue);
+        const nextActive = state.activeCurveId === curveIdValue ? nextCurves[0]?.id ?? null : state.activeCurveId;
+        return {
+          curves: nextCurves,
+          activeCurveId: nextActive,
+          selectedCurvePointId: null,
+        };
+      }),
+    addPointToActiveCurve: (point) =>
+      set((state) => {
+        let activeId = state.activeCurveId;
+        let curves = state.curves;
+        if (!activeId) {
+          activeId = curveId();
+          curves = [
+            ...curves,
+            {
+              id: activeId,
+              name: `Trim ${state.curves.filter((curve) => curve.kind === "trim").length + 1}`,
+              kind: "trim",
+              closed: false,
+              points: [],
+            },
+          ];
+        }
+
+        return {
+          curves: curves.map((curve) =>
+            curve.id === activeId
+              ? {
+                  ...curve,
+                  points: [...curve.points, sanitizeCurvePoint(point)],
+                }
+              : curve
+          ),
+          activeCurveId: activeId,
+          selectedCurvePointId: point.id,
+        };
+      }),
+    updateCurvePoint: (curveIdValue, pointId, point) =>
+      set((state) => ({
+        curves: state.curves.map((curve) =>
+          curve.id === curveIdValue
+            ? {
+                ...curve,
+                points: curve.points.map((item) =>
+                  item.id === pointId ? sanitizeCurvePoint({ ...point, id: pointId }) : item
+                ),
+              }
+            : curve
+        ),
+      })),
+    deleteCurvePoint: (curveIdValue, pointId) =>
+      set((state) => ({
+        curves: state.curves.map((curve) =>
+          curve.id === curveIdValue
+            ? {
+                ...curve,
+                points: curve.points.filter((point) => point.id !== pointId),
+              }
+            : curve
+        ),
+        selectedCurvePointId: state.selectedCurvePointId === pointId ? null : state.selectedCurvePointId,
+      })),
+    setSelectedCurvePointId: (selectedCurvePointId) => set({ selectedCurvePointId }),
+
+    setPickingRegionSeed: (pickingRegionSeed) => set({ pickingRegionSeed }),
+    setRegionSeedTriangleIndex: (regionSeedTriangleIndex) => set({ regionSeedTriangleIndex }),
+    requestRegionCompute: () =>
+      set((state) => ({
+        regionComputeNonce: state.regionComputeNonce + 1,
+      })),
+    setRegionResult: (inRegion, boundaryTriangles) =>
+      set((state) => ({
+        inRegion: normalizeGroupIdsLength(
+          inRegion.map((item) => (item ? 1 : 0)),
+          state.triangleCount
+        ).map((item) => item === 1),
+        regionBoundaryTriangles: boundaryTriangles,
+      })),
+    clearRegion: () =>
+      set((state) => ({
+        inRegion: new Array(state.triangleCount).fill(false),
+        regionBoundaryTriangles: [],
+      })),
+
+    setSplintSettings: (partial) =>
+      set((state) => ({
+        splintSettings: normalizeSplintSettings({ ...state.splintSettings, ...partial }),
+      })),
+    requestSplintGeneration: () =>
+      set((state) => ({
+        splintGenerateNonce: state.splintGenerateNonce + 1,
+        splintStatus: null,
+      })),
+    setSplintStatus: (splintStatus) => set({ splintStatus }),
+    setSplintReady: (splintReady) => set({ splintReady }),
+    clearSplint: () => set({ splintReady: false, splintStatus: null }),
+
     toSession: () => {
       const state = get();
       return {
@@ -609,6 +929,11 @@ export const createEditorStore = () =>
         groups: Object.values(state.groups).sort((a, b) => a.id - b.id),
         landmarks: state.landmarks,
         activeGroupId: state.activeGroupId,
+        curves: state.curves,
+        activeCurveId: state.activeCurveId,
+        regionSeedTriangleIndex: state.regionSeedTriangleIndex,
+        inRegion: state.inRegion,
+        splintSettings: state.splintSettings,
       };
     },
     loadSession: (session) => {
@@ -623,8 +948,18 @@ export const createEditorStore = () =>
       }
       const nextGroups = defaultGroups();
       for (const group of session.groups) {
-        nextGroups[group.id] = group;
+        nextGroups[group.id] = {
+          ...group,
+          type: group.type === "relief" ? "relief" : "default",
+        };
       }
+
+      const normalizedCurves = normalizeCurves(session.curves);
+      const normalizedRegion = normalizeGroupIdsLength(
+        (session.inRegion ?? []).map((item) => (item ? 1 : 0)),
+        session.triangleCount
+      ).map((item) => item === 1);
+
       set({
         modelPath: session.modelPath,
         modelFile: null,
@@ -641,6 +976,19 @@ export const createEditorStore = () =>
         activeGroupId: session.activeGroupId,
         undoStack: [],
         redoStack: [],
+        curves: normalizedCurves,
+        activeCurveId:
+          normalizedCurves.find((curve) => curve.id === session.activeCurveId)?.id ??
+          normalizedCurves[0]?.id ??
+          null,
+        selectedCurvePointId: null,
+        pickingRegionSeed: false,
+        regionSeedTriangleIndex: session.regionSeedTriangleIndex ?? null,
+        inRegion: normalizedRegion,
+        regionBoundaryTriangles: [],
+        splintSettings: normalizeSplintSettings(session.splintSettings),
+        splintReady: false,
+        splintStatus: null,
       });
     },
   }));

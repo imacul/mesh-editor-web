@@ -176,17 +176,31 @@ function ensureColorAttribute(geometry: THREE.BufferGeometry): THREE.BufferAttri
 export function applyGroupFaceColors(
   geometry: THREE.BufferGeometry,
   groupIds: number[],
-  groups: Record<number, GroupMeta>
+  groups: Record<number, GroupMeta>,
+  overlay?: {
+    inRegion?: boolean[];
+    boundaryTriangles?: number[];
+  }
 ): void {
   const position = geometry.getAttribute("position");
   const triangleCount = Math.floor(position.count / 3);
   const colors = ensureColorAttribute(geometry);
   const color = new THREE.Color();
+  const overlayColor = new THREE.Color();
+  const boundarySet = overlay?.boundaryTriangles ? new Set(overlay.boundaryTriangles) : null;
 
   for (let tri = 0; tri < triangleCount; tri += 1) {
     const groupId = groupIds[tri] ?? 0;
     const meta = groups[groupId];
     color.set(meta?.color ?? paletteColorForGroup(groupId));
+    if (overlay?.inRegion?.[tri]) {
+      overlayColor.set("#22d3ee");
+      color.lerp(overlayColor, 0.28);
+    }
+    if (boundarySet?.has(tri)) {
+      overlayColor.set("#facc15");
+      color.lerp(overlayColor, 0.5);
+    }
     const alpha = meta?.visible === false ? 0 : 1;
     for (let v = 0; v < 3; v += 1) {
       colors.setXYZW(tri * 3 + v, color.r, color.g, color.b, alpha);
