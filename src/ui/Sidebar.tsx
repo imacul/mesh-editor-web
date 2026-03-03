@@ -2,10 +2,12 @@ import { useMemo } from "react";
 import { useEditorStore } from "../state/editorStore";
 import type { BrushMode } from "../state/types";
 import { CleanupPanel } from "./CleanupPanel";
+import { CurvesPanel } from "./CurvesPanel";
 import { ExportPanel } from "./ExportPanel";
 import { GroupsPanel } from "./GroupsPanel";
 import { LandmarksPanel } from "./LandmarksPanel";
 import { SessionPanel } from "./SessionPanel";
+import { SplintPanel } from "./SplintPanel";
 import { TransformPanel } from "./TransformPanel";
 
 const BRUSH_RADIUS_MIN = 0.0001;
@@ -27,6 +29,7 @@ const MODE_OPTIONS: Array<{ mode: BrushMode; label: string }> = [
   { mode: "paint", label: "Paint" },
   { mode: "erase", label: "Erase" },
   { mode: "pick", label: "Pick" },
+  { mode: "trimCurve", label: "Trim Curve" },
   { mode: "landmark", label: "Landmark" },
 ];
 
@@ -91,6 +94,8 @@ export function Sidebar() {
       </section>
 
       <TransformPanel />
+      <CurvesPanel />
+      <SplintPanel />
       <CleanupPanel />
       <GroupsPanel />
       <LandmarksPanel />
@@ -99,4 +104,3 @@ export function Sidebar() {
     </aside>
   );
 }
-

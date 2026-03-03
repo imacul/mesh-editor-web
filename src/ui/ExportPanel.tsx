@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { getRuntimeMesh } from "../engine/runtimeMesh";
+import { getRuntimeSplintMesh } from "../engine/runtimeSplint";
 import { exportCombinedGLBWithGroupColors } from "../export/glbExport";
+import { exportSplintAsGLB, exportSplintAsSTL } from "../export/splintExport";
 import { exportVisibleGroupsAsSTL } from "../export/stlExport";
 import { editorStoreApi, useEditorStore } from "../state/editorStore";
 
@@ -46,6 +48,32 @@ export function ExportPanel() {
     }
   };
 
+  const exportSplintSTL = () => {
+    const splint = getRuntimeSplintMesh();
+    if (!splint) {
+      setExportStatus("No generated splint to export.");
+      return;
+    }
+    const baseName = modelPath.replace(/[^\w-]+/g, "_") || "mesh";
+    exportSplintAsSTL(splint, `${baseName}-splint.stl`);
+    setExportStatus("Exported splint STL.");
+  };
+
+  const exportSplintGLB = async () => {
+    const splint = getRuntimeSplintMesh();
+    if (!splint) {
+      setExportStatus("No generated splint to export.");
+      return;
+    }
+    const baseName = modelPath.replace(/[^\w-]+/g, "_") || "mesh";
+    try {
+      await exportSplintAsGLB(splint, `${baseName}-splint.glb`);
+      setExportStatus("Exported splint GLB.");
+    } catch (error) {
+      setExportStatus(error instanceof Error ? error.message : "Failed to export splint GLB.");
+    }
+  };
+
   return (
     <section className="panel">
       <h2>Export</h2>
@@ -55,6 +83,14 @@ export function ExportPanel() {
         </button>
         <button className="btn" type="button" onClick={exportGLB}>
           Combined GLB
+        </button>
+      </div>
+      <div className="panel-row">
+        <button className="btn" type="button" onClick={exportSplintSTL}>
+          Splint STL
+        </button>
+        <button className="btn" type="button" onClick={exportSplintGLB}>
+          Splint GLB
         </button>
       </div>
       <p className="hint">Per-group STL downloads one file per visible group (no zip).</p>

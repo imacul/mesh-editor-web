@@ -2,14 +2,27 @@ import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { buildMeshBVH } from "../engine/bvh";
+import { applyGroupFaceColors } from "../engine/meshUtils";
 import { loadEditableModel } from "../engine/modelLoader";
 import { getRuntimeMesh, setRuntimeMesh } from "../engine/runtimeMesh";
+import { setRuntimeSplintMesh } from "../engine/runtimeSplint";
 import { createScene, type SceneContext } from "../engine/scene";
-import { applyGroupFaceColors } from "../engine/meshUtils";
+import {
+  createCurvePointFromIntersection,
+  evaluateCurvePointOnMesh,
+  evaluateCurveWorldPoints,
+} from "../curves/surfaceCurve";
+import { buildBoundaryTriangleSet, countRegionTriangles, extractRegionFromBoundary } from "../mesh/regionFromCurve";
 import { createTriangleIndexingData } from "../mesh/triangleIndexing";
+import { generateSplintMesh } from "../splint/generator";
 import { editorStoreApi, useEditorStore } from "../state/editorStore";
-import type { TriangleChange } from "../state/types";
+import type { CurveKind, SurfaceCurvePoint, TriangleChange } from "../state/types";
 import { collectTrianglesNearSegment } from "../tools/paint";
+
+interface DraggedCurvePoint {
+  curveId: string;
+  pointId: string;
+}
 
 function clampObjectAboveGrid(object: THREE.Object3D): void {
   object.updateWorldMatrix(true, true);
@@ -23,13 +36,59 @@ function clampObjectAboveGrid(object: THREE.Object3D): void {
   }
 }
 
+function disposeObjectTree(object: THREE.Object3D): void {
+  object.traverse((node) => {
+    const mesh = node as THREE.Mesh;
+    if (mesh.isMesh) {
+      mesh.geometry.dispose();
+      if (Array.isArray(mesh.material)) {
+        mesh.material.forEach((material) => material.dispose());
+      } else {
+        mesh.material.dispose();
+      }
+      return;
+    }
+
+    const line = node as THREE.Line;
+    if (line.isLine) {
+      line.geometry.dispose();
+      if (Array.isArray(line.material)) {
+        line.material.forEach((material) => material.dispose());
+      } else {
+        line.material.dispose();
+      }
+    }
+  });
+}
+
+function curveColor(kind: CurveKind, active: boolean): string {
+  if (kind === "seam") {
+    return active ? "#f97316" : "#fb923c";
+  }
+  return active ? "#22d3ee" : "#38bdf8";
+}
+
+function defaultSplintMaterial(): THREE.MeshStandardMaterial {
+  return new THREE.MeshStandardMaterial({
+    color: "#22d3ee",
+    roughness: 0.5,
+    metalness: 0.05,
+    transparent: true,
+    opacity: 0.92,
+    side: THREE.DoubleSide,
+  });
+}
+
 export function Viewport() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const sceneRef = useRef<SceneContext | null>(null);
   const meshRef = useRef<THREE.Mesh | null>(null);
+  const splintMeshRef = useRef<THREE.Mesh | null>(null);
   const transformControlsRef = useRef<TransformControls | null>(null);
   const landmarksGroupRef = useRef<THREE.Group | null>(null);
+  const curvesGroupRef = useRef<THREE.Group | null>(null);
   const isPaintingRef = useRef(false);
+  const draggedCurvePointRef = useRef<DraggedCurvePoint | null>(null);
   const lastPaintPointRef = useRef<THREE.Vector3 | null>(null);
   const gizmoDraggingRef = useRef(false);
   const raycasterRef = useRef(new THREE.Raycaster());
@@ -54,6 +113,14 @@ export function Viewport() {
   const focusRequestNonce = useEditorStore((state) => state.focusRequestNonce);
   const showPerfHud = useEditorStore((state) => state.showPerfHud);
   const perfStats = useEditorStore((state) => state.perfStats);
+  const curves = useEditorStore((state) => state.curves);
+  const activeCurveId = useEditorStore((state) => state.activeCurveId);
+  const selectedCurvePointId = useEditorStore((state) => state.selectedCurvePointId);
+  const regionComputeNonce = useEditorStore((state) => state.regionComputeNonce);
+  const inRegion = useEditorStore((state) => state.inRegion);
+  const regionBoundaryTriangles = useEditorStore((state) => state.regionBoundaryTriangles);
+  const splintGenerateNonce = useEditorStore((state) => state.splintGenerateNonce);
+  const splintReady = useEditorStore((state) => state.splintReady);
 
   useEffect(() => {
     if (!containerRef.current) {
@@ -68,6 +135,11 @@ export function Viewport() {
     landmarksGroup.name = "Landmarks";
     context.scene.add(landmarksGroup);
     landmarksGroupRef.current = landmarksGroup;
+
+    const curvesGroup = new THREE.Group();
+    curvesGroup.name = "Curves";
+    context.scene.add(curvesGroup);
+    curvesGroupRef.current = curvesGroup;
 
     const transformControls = new TransformControls(context.camera, context.renderer.domElement);
     transformControls.setMode("rotate");
@@ -147,6 +219,7 @@ export function Viewport() {
       context.controls.enabled = !gizmoDraggingRef.current;
       if (gizmoDraggingRef.current) {
         isPaintingRef.current = false;
+        draggedCurvePointRef.current = null;
       }
     };
 
@@ -187,7 +260,7 @@ export function Viewport() {
         pointerRef.current.y = -((clientY - rect.top) / rect.height) * 2 + 1;
 
         raycasterRef.current.setFromCamera(pointerRef.current, context.camera);
-        const intersections = raycasterRef.current.intersectObject(meshRef.current!, false);
+        const intersections = raycasterRef.current.intersectObject(meshRef.current, false);
         if (!intersections.length) {
           return null;
         }
@@ -235,6 +308,45 @@ export function Viewport() {
       return null;
     };
 
+    const pickCurvePointMarker = (event: PointerEvent): DraggedCurvePoint | null => {
+      if (!curvesGroupRef.current || !curvesGroupRef.current.children.length) {
+        return null;
+      }
+      const rect = canvas.getBoundingClientRect();
+      pointerRef.current.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      pointerRef.current.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      raycasterRef.current.setFromCamera(pointerRef.current, context.camera);
+      const hits = raycasterRef.current.intersectObjects(curvesGroupRef.current.children, true);
+      for (const hit of hits) {
+        const curveId = hit.object.userData.curveId as string | undefined;
+        const pointId = hit.object.userData.pointId as string | undefined;
+        if (curveId && pointId) {
+          return { curveId, pointId };
+        }
+      }
+      return null;
+    };
+
+    const updateCurvePointFromHit = (drag: DraggedCurvePoint, hit: THREE.Intersection) => {
+      if (!meshRef.current) {
+        return;
+      }
+      const next = createCurvePointFromIntersection(meshRef.current, hit);
+      if (!next) {
+        return;
+      }
+      const state = editorStoreApi.getState();
+      const currentCurve = state.curves.find((curve) => curve.id === drag.curveId);
+      const currentPoint = currentCurve?.points.find((point) => point.id === drag.pointId);
+      if (!currentPoint) {
+        return;
+      }
+      state.updateCurvePoint(drag.curveId, drag.pointId, {
+        ...next,
+        id: drag.pointId,
+      });
+    };
+
     const applyToolAtIntersection = (hit: THREE.Intersection) => {
       if (!meshRef.current) {
         return;
@@ -246,6 +358,12 @@ export function Viewport() {
 
       const state = editorStoreApi.getState();
       state.setLastPickedTriangleIndex(triangleIndex);
+
+      if (state.pickingRegionSeed) {
+        state.setRegionSeedTriangleIndex(triangleIndex);
+        state.setPickingRegionSeed(false);
+        return;
+      }
 
       if (state.brushMode === "pick") {
         const pickedGroup = state.groupIds[triangleIndex] ?? 0;
@@ -264,6 +382,16 @@ export function Viewport() {
           normal: [localNormal.x, localNormal.y, localNormal.z],
           groupId,
         });
+        return;
+      }
+
+      if (state.brushMode === "trimCurve") {
+        const point = createCurvePointFromIntersection(meshRef.current, hit);
+        if (!point) {
+          return;
+        }
+        state.addPointToActiveCurve(point);
+        state.setSelectedCurvePointId(point.id);
         return;
       }
 
@@ -309,7 +437,27 @@ export function Viewport() {
       }
 
       const state = editorStoreApi.getState();
+
+      if (state.brushMode === "trimCurve") {
+        const markerHit = pickCurvePointMarker(event);
+        if (markerHit) {
+          draggedCurvePointRef.current = markerHit;
+          state.setSelectedCurvePointId(markerHit.pointId);
+          context.controls.enabled = false;
+          return;
+        }
+      }
+
       const centerHit = pickIntersection(event);
+
+      if (state.pickingRegionSeed) {
+        const robustHit = centerHit ?? pickIntersection(event, true);
+        if (robustHit) {
+          applyToolAtIntersection(robustHit);
+        }
+        return;
+      }
+
       if (state.brushMode === "paint" || state.brushMode === "erase") {
         const robustHit = centerHit ?? pickIntersection(event, true);
         if (!robustHit) {
@@ -331,6 +479,14 @@ export function Viewport() {
     };
 
     const onPointerMove = (event: PointerEvent) => {
+      if (draggedCurvePointRef.current) {
+        const hit = pickIntersection(event, true);
+        if (hit) {
+          updateCurvePointFromHit(draggedCurvePointRef.current, hit);
+        }
+        return;
+      }
+
       if (!isPaintingRef.current || gizmoDraggingRef.current) {
         return;
       }
@@ -345,6 +501,11 @@ export function Viewport() {
     };
 
     const onPointerUp = () => {
+      if (draggedCurvePointRef.current) {
+        draggedCurvePointRef.current = null;
+        context.controls.enabled = !gizmoDraggingRef.current;
+      }
+
       if (isPaintingRef.current) {
         flushPendingPaintChanges();
         const history = Array.from(strokeHistory.values());
@@ -354,9 +515,7 @@ export function Viewport() {
         const strokeStart = strokeStartTimeRef.current;
         if (strokeStart != null) {
           const strokeMs = Number((performance.now() - strokeStart).toFixed(2));
-          editorStoreApi
-            .getState()
-            .setPerfStats({ strokeMs, strokeTriangles: history.length });
+          editorStoreApi.getState().setPerfStats({ strokeMs, strokeTriangles: history.length });
         }
       }
       isPaintingRef.current = false;
@@ -397,6 +556,16 @@ export function Viewport() {
       context.scene.remove(transformControls);
       transformControls.dispose();
       context.scene.remove(landmarksGroup);
+      disposeObjectTree(curvesGroup);
+      context.scene.remove(curvesGroup);
+
+      if (splintMeshRef.current) {
+        context.scene.remove(splintMeshRef.current);
+        disposeObjectTree(splintMeshRef.current);
+        splintMeshRef.current = null;
+      }
+      setRuntimeSplintMesh(null);
+
       if (pendingFlushFrameRef.current != null) {
         cancelAnimationFrame(pendingFlushFrameRef.current);
         pendingFlushFrameRef.current = null;
@@ -409,9 +578,11 @@ export function Viewport() {
       sceneRef.current = null;
       transformControlsRef.current = null;
       landmarksGroupRef.current = null;
+      curvesGroupRef.current = null;
       meshRef.current = null;
       setRuntimeMesh(null);
       isPaintingRef.current = false;
+      draggedCurvePointRef.current = null;
       lastPaintPointRef.current = null;
       pendingPaintChanges.clear();
       strokeHistory.clear();
@@ -438,6 +609,7 @@ export function Viewport() {
     const load = async () => {
       editorStoreApi.getState().setLoadingModel(true);
       editorStoreApi.getState().setModelError(null);
+      editorStoreApi.getState().clearSplint();
       if (!modelFile && modelPath.startsWith("uploaded:")) {
         editorStoreApi.getState().setLoadingModel(false);
         editorStoreApi
@@ -466,6 +638,13 @@ export function Viewport() {
           setRuntimeMesh(null);
         }
 
+        if (splintMeshRef.current) {
+          context.scene.remove(splintMeshRef.current);
+          disposeMesh(splintMeshRef.current);
+          splintMeshRef.current = null;
+          setRuntimeSplintMesh(null);
+        }
+
         meshRef.current = loaded.mesh;
         setRuntimeMesh(loaded.mesh);
 
@@ -486,9 +665,7 @@ export function Viewport() {
         context.scene.add(loaded.mesh);
 
         const indexing = createTriangleIndexingData(loaded.mesh.geometry);
-        editorStoreApi
-          .getState()
-          .syncModel(modelPath, indexing.triangleCount, indexing.triangleOrderHash);
+        editorStoreApi.getState().syncModel(modelPath, indexing.triangleCount, indexing.triangleOrderHash);
         editorStoreApi.getState().setTriangleAdjacency(indexing.adjacency);
 
         const hasBVH = buildMeshBVH(loaded.mesh.geometry);
@@ -517,9 +694,7 @@ export function Viewport() {
 
     load().catch((error) => {
       editorStoreApi.getState().setLoadingModel(false);
-      editorStoreApi
-        .getState()
-        .setModelError(error instanceof Error ? error.message : "Model loading failed");
+      editorStoreApi.getState().setModelError(error instanceof Error ? error.message : "Model loading failed");
     });
 
     return () => {
@@ -567,8 +742,11 @@ export function Viewport() {
     if (!meshRef.current) {
       return;
     }
-    applyGroupFaceColors(meshRef.current.geometry, groupIds, groups);
-  }, [groupIds, groups]);
+    applyGroupFaceColors(meshRef.current.geometry, groupIds, groups, {
+      inRegion,
+      boundaryTriangles: regionBoundaryTriangles,
+    });
+  }, [groupIds, groups, inRegion, regionBoundaryTriangles]);
 
   useEffect(() => {
     const landmarksGroup = landmarksGroupRef.current;
@@ -615,14 +793,88 @@ export function Viewport() {
   }, [landmarks, modelPath]);
 
   useEffect(() => {
+    const curvesGroup = curvesGroupRef.current;
+    const mesh = meshRef.current;
+    if (!curvesGroup || !mesh) {
+      return;
+    }
+
+    while (curvesGroup.children.length) {
+      const child = curvesGroup.children.pop();
+      if (!child) {
+        continue;
+      }
+      disposeObjectTree(child);
+    }
+
+    mesh.geometry.computeBoundingSphere();
+    const markerRadius = Math.max((mesh.geometry.boundingSphere?.radius ?? 1) * 0.008, 0.002);
+    const lineOffset = markerRadius * 0.35;
+
+    for (const curve of curves) {
+      const evaluatedPoints = curve.points
+        .map((point) => ({
+          source: point,
+          evaluated: evaluateCurvePointOnMesh(mesh, point),
+        }))
+        .filter((item) => Boolean(item.evaluated)) as Array<{
+        source: SurfaceCurvePoint;
+        evaluated: NonNullable<ReturnType<typeof evaluateCurvePointOnMesh>>;
+      }>;
+
+      if (!evaluatedPoints.length) {
+        continue;
+      }
+
+      const active = curve.id === activeCurveId;
+      const lineColor = curveColor(curve.kind, active);
+
+      const lineVertices: number[] = [];
+      for (const item of evaluatedPoints) {
+        const p = item.evaluated.worldPosition.clone().addScaledVector(item.evaluated.worldNormal, lineOffset);
+        lineVertices.push(p.x, p.y, p.z);
+      }
+      if (curve.closed && evaluatedPoints.length >= 3) {
+        const first = evaluatedPoints[0].evaluated;
+        const p = first.worldPosition.clone().addScaledVector(first.worldNormal, lineOffset);
+        lineVertices.push(p.x, p.y, p.z);
+      }
+
+      if (lineVertices.length >= 6) {
+        const lineGeometry = new THREE.BufferGeometry();
+        lineGeometry.setAttribute("position", new THREE.Float32BufferAttribute(lineVertices, 3));
+        const lineMaterial = new THREE.LineBasicMaterial({ color: lineColor });
+        const line = new THREE.Line(lineGeometry, lineMaterial);
+        line.userData.curveId = curve.id;
+        curvesGroup.add(line);
+      }
+
+      for (const item of evaluatedPoints) {
+        const markerGeometry = new THREE.SphereGeometry(markerRadius, 12, 12);
+        const markerMaterial = new THREE.MeshStandardMaterial({
+          color: item.source.id === selectedCurvePointId ? "#f8fafc" : lineColor,
+          emissive: item.source.id === selectedCurvePointId ? "#38bdf8" : "#0f172a",
+          emissiveIntensity: item.source.id === selectedCurvePointId ? 0.45 : 0.2,
+          roughness: 0.35,
+        });
+        const marker = new THREE.Mesh(markerGeometry, markerMaterial);
+        marker.position
+          .copy(item.evaluated.worldPosition)
+          .addScaledVector(item.evaluated.worldNormal, lineOffset * 1.6);
+        marker.userData.curveId = curve.id;
+        marker.userData.pointId = item.source.id;
+        curvesGroup.add(marker);
+      }
+    }
+  }, [curves, activeCurveId, selectedCurvePointId, modelTransform, modelPath]);
+
+  useEffect(() => {
     if (!focusRequestNonce) {
       return;
     }
     const context = sceneRef.current;
     const landmarkId = editorStoreApi.getState().focusLandmarkId;
-    const target = editorStoreApi
-      .getState()
-      .landmarks.find((landmark) => landmark.id === landmarkId);
+    const target = editorStoreApi.getState().landmarks.find((landmark) => landmark.id === landmarkId);
     if (!context || !target) {
       return;
     }
@@ -638,6 +890,133 @@ export function Viewport() {
     context.controls.target.copy(targetPoint);
     context.controls.update();
   }, [focusRequestNonce]);
+
+  useEffect(() => {
+    const mesh = meshRef.current;
+    if (!mesh || !regionComputeNonce) {
+      return;
+    }
+
+    const state = editorStoreApi.getState();
+    if (!state.triangleAdjacency.length || !state.triangleCount) {
+      state.setSplintStatus("No adjacency available for region extraction.");
+      return;
+    }
+
+    const activeTrimCurve =
+      state.curves.find((curve) => curve.id === state.activeCurveId && curve.kind === "trim") ??
+      state.curves.find((curve) => curve.kind === "trim" && curve.closed);
+
+    if (!activeTrimCurve) {
+      state.setSplintStatus("Create and select a trim curve first.");
+      return;
+    }
+
+    if (!activeTrimCurve.closed || activeTrimCurve.points.length < 3) {
+      state.setSplintStatus("Trim curve must be closed and have at least 3 points.");
+      return;
+    }
+
+    if (state.regionSeedTriangleIndex == null) {
+      state.setSplintStatus("Pick a region seed triangle first.");
+      return;
+    }
+
+    const worldPoints = evaluateCurveWorldPoints(mesh, activeTrimCurve.points, 0);
+    if (worldPoints.length < 3) {
+      state.setSplintStatus("Trim curve points are not valid on the current mesh.");
+      return;
+    }
+
+    mesh.geometry.computeBoundingSphere();
+    const radius = Math.max((mesh.geometry.boundingSphere?.radius ?? 1) * 0.004, 0.0005);
+    const boundary = buildBoundaryTriangleSet(mesh, worldPoints, true, radius);
+    const region = extractRegionFromBoundary({
+      triangleCount: state.triangleCount,
+      adjacency: state.triangleAdjacency,
+      seedTriangleIndex: state.regionSeedTriangleIndex,
+      blockedTriangles: boundary,
+    });
+
+    state.setRegionResult(region, Array.from(boundary));
+    state.setSplintStatus(`Region extracted: ${countRegionTriangles(region)} triangles.`);
+  }, [regionComputeNonce]);
+
+  useEffect(() => {
+    const context = sceneRef.current;
+    const mesh = meshRef.current;
+    if (!context || !mesh || !splintGenerateNonce) {
+      return;
+    }
+
+    const state = editorStoreApi.getState();
+    const regionCount = countRegionTriangles(state.inRegion);
+    if (regionCount === 0) {
+      state.setSplintStatus("Region is empty. Run region extraction before generating splint.");
+      return;
+    }
+
+    const seamCurves = state.curves
+      .filter((curve) => curve.kind === "seam" && curve.points.length >= 2)
+      .map((curve) => ({
+        points: evaluateCurveWorldPoints(mesh, curve.points, 0),
+        closed: curve.closed,
+      }))
+      .filter((curve) => curve.points.length >= 2);
+
+    const reliefGroupIds = new Set<number>();
+    for (const group of Object.values(state.groups)) {
+      if (group.type === "relief") {
+        reliefGroupIds.add(group.id);
+      }
+    }
+
+    try {
+      const result = generateSplintMesh({
+        mesh,
+        inRegion: state.inRegion,
+        groupIds: state.groupIds,
+        reliefGroupIds,
+        seamCurves,
+        params: state.splintSettings,
+      });
+
+      if (splintMeshRef.current) {
+        context.scene.remove(splintMeshRef.current);
+        disposeObjectTree(splintMeshRef.current);
+        splintMeshRef.current = null;
+      }
+
+      const material = defaultSplintMaterial();
+      const splintMesh = new THREE.Mesh(result.geometry, material);
+      splintMesh.name = "GeneratedSplint";
+      context.scene.add(splintMesh);
+      splintMeshRef.current = splintMesh;
+      setRuntimeSplintMesh(splintMesh);
+
+      state.setSplintReady(true);
+      state.setSplintStatus(
+        `Splint generated (${result.splintTriangles} tris) from ${result.sourceRegionTriangles} region tris.`
+      );
+    } catch (error) {
+      state.setSplintReady(false);
+      state.setSplintStatus(error instanceof Error ? error.message : "Splint generation failed.");
+    }
+  }, [splintGenerateNonce]);
+
+  useEffect(() => {
+    if (splintReady) {
+      return;
+    }
+    const context = sceneRef.current;
+    if (!context || !splintMeshRef.current) {
+      return;
+    }
+    context.scene.remove(splintMeshRef.current);
+    disposeObjectTree(splintMeshRef.current);
+    splintMeshRef.current = null;
+    setRuntimeSplintMesh(null);
+  }, [splintReady]);
 
   return (
     <section className="viewport">

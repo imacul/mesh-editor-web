@@ -9,6 +9,7 @@ export function GroupsPanel() {
   const renameGroup = useEditorStore((state) => state.renameGroup);
   const setGroupColor = useEditorStore((state) => state.setGroupColor);
   const setGroupVisibility = useEditorStore((state) => state.setGroupVisibility);
+  const setGroupType = useEditorStore((state) => state.setGroupType);
   const createGroup = useEditorStore((state) => state.createGroup);
 
   const presentGroups = useMemo(() => {
@@ -29,6 +30,7 @@ export function GroupsPanel() {
             name: id === 0 ? "Unassigned" : `Group ${id}`,
             color: "#7f8c8d",
             visible: true,
+            type: "default" as const,
           };
           const faceCount = groupIds.reduce((total, value) => (value === id ? total + 1 : total), 0);
           return (
@@ -59,6 +61,10 @@ export function GroupsPanel() {
                   value={group.name}
                   onChange={(event) => renameGroup(id, event.target.value)}
                 />
+                <select value={group.type} onChange={(event) => setGroupType(id, event.target.value === "relief" ? "relief" : "default")}>
+                  <option value="default">default</option>
+                  <option value="relief">relief</option>
+                </select>
                 <span style={{ fontSize: 12, color: "#94a3b8" }}>{faceCount} faces</span>
               </div>
             </div>
@@ -68,4 +74,3 @@ export function GroupsPanel() {
     </section>
   );
 }
-
