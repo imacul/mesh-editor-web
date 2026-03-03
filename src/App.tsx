@@ -18,13 +18,15 @@ function App() {
 
       if (event.key === "[") {
         event.preventDefault();
-        setBrushRadius(Math.max(0.01, brushRadius - 0.05));
+        const delta = Math.max(0.0001, brushRadius * 0.12);
+        setBrushRadius(Math.max(0.0001, brushRadius - delta));
         return;
       }
 
       if (event.key === "]") {
         event.preventDefault();
-        setBrushRadius(brushRadius + 0.05);
+        const delta = Math.max(0.0001, brushRadius * 0.12);
+        setBrushRadius(brushRadius + delta);
         return;
       }
 
@@ -51,4 +53,3 @@ function App() {
 }
 
 export default App;
-

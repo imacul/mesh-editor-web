@@ -66,6 +66,7 @@ select {
 
 .panel input[type="text"],
 .panel input[type="number"],
+.panel input[type="range"],
 .panel select {
   width: 100%;
   border: 1px solid #32405f;
@@ -91,6 +92,11 @@ select {
 .btn.active {
   border-color: #38bdf8;
   background: #0f4f74;
+}
+
+.transform-nudge {
+  min-width: 30px;
+  padding: 5px 0;
 }
 
 .group-item,
@@ -177,4 +183,3 @@ select {
     max-height: 45vh;
   }
 }
-
