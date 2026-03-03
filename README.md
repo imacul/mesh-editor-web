@@ -1,99 +1,96 @@
-# Mesh Editor Web (v1-ready)
+# Mesh Editor Web (Splint v1 Workflow)
 
-Web-based 3D mesh editor focused on face-group painting (segmentation) and landmarks.
+Web-based 3D mesh editor for triangle-based segmentation and splint generation:
+
+1. Load scan mesh  
+2. Draw trim/seam curves on the surface  
+3. Paint relief zones  
+4. Extract region + generate splint  
+5. Export printable STL/GLB
 
 ## Stack
 - React + TypeScript + Vite
 - Three.js
 - three-mesh-bvh
-- Zustand for app state
-- Vitest for unit tests
+- Zustand
+- Vitest
+
+## Scripts
+- `npm run dev`
+- `npm run build`
+- `npm run preview`
+- `npm run lint`
+- `npm run test`
 
 ## Setup
-1. Install dependencies:
-   ```bash
-   npm install
-   ```
-2. Start dev server:
-   ```bash
-   npm run dev
-   ```
-3. Build production bundle:
-   ```bash
-   npm run build
-   ```
-4. Preview production build:
-   ```bash
-   npm run preview
-   ```
-5. Run lint and tests:
-   ```bash
-   npm run lint
-   npm run test
-   ```
+1. `npm install`
+2. `npm run dev`
 
-## Usage
-1. Open the app and upload a local mesh in the Session panel (`.stl`, `.obj`, `.ply`, `.glb`, `.gltf`).
-2. You can still load by URL/path using the model path input if needed.
-3. Choose a tool:
-   - `Paint`: assign active group to faces.
-   - `Erase`: set faces to group `0`.
-   - `Pick`: eyedropper, sets active group from clicked face.
-   - `Landmark`: click to place a landmark.
-4. Adjust brush radius with the slider (log-scale for fine tiny values), or use `[` / `]`.
-5. Use `Ctrl/Cmd+Z` for undo and `Shift+Ctrl/Cmd+Z` for redo.
-6. Manage group names/colors/visibility in the Groups panel.
-7. Use the Transform panel to move/center/scale. Click `Rotate` to show the viewport gizmo, and click again to hide it.
-8. Use Cleanup tools:
-   - Flood Fill from picked triangle (same-source constrained or unconstrained).
-   - Smooth boundary (majority vote, N iterations).
-   - Remove speckles (small connected components by size threshold).
-   - Grow/Shrink active group by 1-3 adjacency steps.
-9. Export:
-   - Per-group STL (one download per visible group).
-   - Combined GLB with group colors encoded as vertex colors.
-10. Export/Import full session JSON in the Session panel.
+## Core Workflow
+1. In **Session**, upload `.stl/.obj/.ply/.glb/.gltf`.
+2. In **Tools**, choose `Trim Curve`.
+3. In **Curves & Region**:
+   - Create/select a `Trim` curve and click on mesh to place points.
+   - Drag curve point markers to edit.
+   - Toggle open/closed.
+   - Create optional `Seam` curve(s).
+4. Click **Pick Region Seed**, then click a triangle inside the trim loop.
+5. Click **Compute Region**.
+6. In **Groups**, mark any group as `relief` where extra clearance is needed.
+7. In **Splint Generator**, set parameters and click **Generate Splint**.
+8. In **Export**, download:
+   - Segmentation exports: per-group STL / combined GLB
+   - Splint exports: `Splint STL` / `Splint GLB`
 
-If loading fails, a fallback mock box is loaded so the editor remains usable.
-If you import a session created from a local upload, re-upload that mesh file to restore the original geometry.
+## Tools Summary
+- `Paint`: paint active group per triangle.
+- `Erase`: paint group `0`.
+- `Pick`: eyedropper group from clicked face.
+- `Trim Curve`: place/edit surface curve points.
+- `Landmark`: place annotation spheres.
 
-## Session JSON contents
-- `modelPath`
-- `modelTransform` (position + rotation + scale)
-- `triangleCount`
-- `triangleOrderHash`
-- `groupIdsEncoded` (base64-encoded uint16 group IDs per triangle)
-- `groups` metadata (name/color/visibility)
-- `landmarks` (id, name, position, normal, group at placement)
-- `activeGroupId`
+## Splint Generation (MVP Algorithm)
+- Extract selected region triangles.
+- Build welded region topology.
+- Offset inner surface with:
+  - `baseClearance`
+  - `+ reliefExtraClearance` on relief-labeled areas
+- Create outer surface using `thickness`.
+- Stitch boundary edges for closed shell.
+- Remove shell triangles near seam curve (`seamCutWidth`).
+- Smooth boundary with Laplacian iterations.
 
-## Performance notes
-- BVH acceleration is enabled via `three-mesh-bvh` for raycasting and brush neighborhood queries.
-- Fallback path is kept: if BVH is unavailable, painting uses geometric triangle-distance checks.
+## Session JSON
+Session export/import includes:
+- model path + transform
+- triangle mapping (`triangleCount`, `triangleOrderHash`, encoded group IDs)
+- groups metadata (name/color/visibility/type)
+- landmarks
+- curves (trim/seam, points with triangle index + barycentric + world position)
+- region seed + region mask
+- splint settings
+
+## Performance Notes
+- BVH acceleration (`three-mesh-bvh`) is used for raycasting/brush neighborhood queries.
+- Fallback path is retained when BVH is unavailable.
 - Paint updates are batched and flushed once per animation frame.
-- Perf HUD (toggle in Tools) shows:
-  - Triangle count
-  - Last stroke time (ms)
-  - Approx FPS
-  - BVH status
+- Optional perf HUD shows FPS/stroke time/triangle count/BVH status.
 
-## Cleanup internals
-- Triangle adjacency is precomputed from shared triangle edges after each model load.
-- Adjacency cache is invalidated/rebuilt when loaded geometry changes (including subdivision changes).
-- Triangle indexing source of truth is centralized in `src/mesh/triangleIndexing.ts`.
-
-## Project structure
+## Project Structure
 ```text
 src/
-  engine/   Three.js scene setup, model loading, BVH/runtime helpers
-  mesh/     Triangle indexing + adjacency building
-  tools/    Painting, cleanup ops, palette, group encoding
-  export/   STL / GLB export helpers
-  state/    Zustand store, undo/redo, session serialization
-  ui/       Sidebar panels + viewport
+  engine/   scene, loaders, runtime handles, BVH setup
+  mesh/     adjacency, triangle indexing, region extraction
+  curves/   surface curve projection/evaluation utilities
+  tools/    painting, cleanup, encoding, palette
+  splint/   splint generation pipeline
+  export/   segmentation + splint STL/GLB exports
+  state/    zustand store + session serialization
+  ui/       viewport + sidebar panels
 ```
 
 ## Limitations
-- Per-group STL export is multi-file download (no zip bundling yet).
-- Session restore expects matching triangle order/hash for exact group mapping.
-- Very high-poly meshes can still require larger brush radius or stronger cleanup smoothing.
+- Curve snapping is triangle-based and designed for MVP correctness over CAD-grade precision.
+- Region extraction uses boundary-triangle blocking; very complex meshes may require radius/seed adjustments.
+- Splint shell generation is heuristic and not yet medically validated.
+- Per-group STL export is separate downloads (no zip bundle).
