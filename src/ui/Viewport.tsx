@@ -607,6 +607,9 @@ export function Viewport() {
     };
 
     const load = async () => {
+      if (!modelFile && !modelPath) {
+        return;
+      }
       editorStoreApi.getState().setLoadingModel(true);
       editorStoreApi.getState().setModelError(null);
       editorStoreApi.getState().clearSplint();

@@ -366,7 +366,7 @@ const createInitialData = (): Omit<
   | "toSession"
   | "loadSession"
 > => ({
-  modelPath: "/models/sample.glb",
+  modelPath: "",
   modelFile: null,
   modelTransform: { ...DEFAULT_MODEL_TRANSFORM },
   triangleCount: 0,
