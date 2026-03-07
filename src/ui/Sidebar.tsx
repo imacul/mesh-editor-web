@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { useEditorStore } from "../state/editorStore";
 import type { BrushMode } from "../state/types";
+import { CaseHistoryPanel } from "./CaseHistoryPanel";
 import { CleanupPanel } from "./CleanupPanel";
 import { CurvesPanel } from "./CurvesPanel";
 import { ExportPanel } from "./ExportPanel";
@@ -101,6 +102,7 @@ export function Sidebar() {
       <LandmarksPanel />
       <ExportPanel />
       <SessionPanel />
+      <CaseHistoryPanel />
     </aside>
   );
 }

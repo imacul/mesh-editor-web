@@ -1,13 +1,39 @@
 import { useEffect } from "react";
+import { getCaseByShareToken, getModelUrl } from "./api/client";
+import { editorStoreApi, useEditorStore } from "./state/editorStore";
+import type { EditorSession } from "./state/types";
 import { Sidebar } from "./ui/Sidebar";
 import { Viewport } from "./ui/Viewport";
-import { useEditorStore } from "./state/editorStore";
 
 function App() {
   const setBrushRadius = useEditorStore((state) => state.setBrushRadius);
   const brushRadius = useEditorStore((state) => state.brushRadius);
   const undo = useEditorStore((state) => state.undo);
   const redo = useEditorStore((state) => state.redo);
+
+  // Load a shared case if ?share=TOKEN is present in the URL
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get("share");
+    if (!token) return;
+
+    getCaseByShareToken(token)
+      .then((detail) => {
+        const session = JSON.parse(detail.session_json) as EditorSession;
+        if (detail.model_path) {
+          session.modelPath = getModelUrl(detail.model_path);
+        }
+        editorStoreApi.getState().loadSession(session);
+        // Clean the token from the URL without triggering a reload
+        const url = new URL(window.location.href);
+        url.searchParams.delete("share");
+        window.history.replaceState(null, "", url.toString());
+      })
+      .catch((err: unknown) => {
+        console.error("Failed to load shared case:", err);
+      });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
