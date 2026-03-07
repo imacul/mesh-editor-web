@@ -228,8 +228,6 @@ export function Viewport() {
       if (!editedObject || editedObject !== meshRef.current) {
         return;
       }
-      clampObjectAboveGrid(editedObject);
-
       const nextPosition: [number, number, number] = [
         Number(editedObject.position.x.toFixed(4)),
         Number(editedObject.position.y.toFixed(4)),
@@ -738,7 +736,6 @@ export function Viewport() {
     );
     meshRef.current.scale.setScalar(modelTransform.scale);
     meshRef.current.updateMatrixWorld(true);
-    clampObjectAboveGrid(meshRef.current);
   }, [modelTransform]);
 
   useEffect(() => {
