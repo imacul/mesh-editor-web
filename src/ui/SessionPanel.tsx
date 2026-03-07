@@ -17,7 +17,6 @@ export function SessionPanel() {
       return;
     }
     setModelFile(file);
-    setImportError(null);
     event.target.value = "";
   };
 
